@@ -47,6 +47,14 @@ export class WsAdapter extends AbstractWsAdapter {
     wsPackage = loadPackage('ws', 'WsAdapter', () => require('ws'));
   }
 
+  private replaceEmit(server) {
+    const origEmit = server.emit.bind(server);
+    server.emit = (event: string, data: any, param3?: any) =>
+      param3 !== undefined
+        ? origEmit(event, data, param3)
+        : origEmit('event', event, data);
+  }
+
   public create(
     port: number,
     options?: Record<string, any> & {
@@ -73,11 +81,13 @@ export class WsAdapter extends AbstractWsAdapter {
         }),
       );
 
+      this.replaceEmit(wsServer);
       this.addWsServerToRegistry(wsServer, port, path);
       return wsServer;
     }
 
     if (server) {
+      this.replaceEmit(server);
       return server;
     }
     if (path && port !== UNDERLYING_HTTP_SERVER_PORT) {
@@ -93,6 +103,7 @@ export class WsAdapter extends AbstractWsAdapter {
           ...wsOptions,
         }),
       );
+      this.replaceEmit(wsServer);
       this.addWsServerToRegistry(wsServer, port, path);
       return wsServer;
     }
@@ -103,6 +114,7 @@ export class WsAdapter extends AbstractWsAdapter {
         ...wsOptions,
       }),
     );
+    this.replaceEmit(wsServer);
     return wsServer;
   }
 
@@ -154,8 +166,26 @@ export class WsAdapter extends AbstractWsAdapter {
     return server;
   }
 
+  private clientData = new Map<WebSocket, {server: any, listener: (...args: any[]) => void}>();
+
+  public bindClientConnect(server: any, callback: Function) {
+    server.on(CONNECTION_EVENT, (client: any) => {
+      const listener = (event, data) => client.send(JSON.stringify({event, data}));
+      server.on('event', listener);
+      this.clientData.set(client, {server, listener});
+      callback(client);
+    })
+  }
+
   public bindClientDisconnect(client: any, callback: Function) {
-    client.on(CLOSE_EVENT, callback);
+    client.on(CLOSE_EVENT, () => {
+      const data = this.clientData.get(client);
+      if (data) {
+        data.server.removeListener('event', data.listener);
+        this.clientData.delete(client);
+      }
+      callback();
+    })
   }
 
   public async dispose() {
